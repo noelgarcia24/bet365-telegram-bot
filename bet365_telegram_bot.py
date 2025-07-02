@@ -1,27 +1,128 @@
 
 import time
 import requests
-import os
+import json
+from datetime import datetime
+from flask import Flask
+import threading
+import pytz
 
-TOKEN = os.getenv("TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-MESSAGE = os.getenv("MESSAGE")
-INTERVAL = int(os.getenv("INTERVAL"))
+# Inicia el servidor Flask para mantener vivo el bot
+app = Flask(__name__)
 
-def send_alert():
+@app.route("/")
+def ping():
+    return "pong", 200
+
+def start_web():
+    app.run(host="0.0.0.0", port=8080)
+
+# Configuración desde archivo config.json
+with open("config.json") as f:
+    cfg = json.load(f)
+
+API_KEY = cfg["api_key"]
+TOKEN = cfg["token"]
+CHAT_ID = cfg["chat_id"]
+INTERVAL = cfg["interval_seconds"]
+SPORT = "soccer_fifa_club_world_cup"
+REGION = "eu"
+MARKETS = ["spreads", "totals"]
+last = {}
+
+# Enviar mensajes a Telegram
+def send_alert(msg):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": MESSAGE,
-        "parse_mode": "Markdown"
-    }
-    response = requests.post(url, data=payload)
-    if response.status_code == 200:
-        print("✅ Mensaje enviado correctamente.")
-    else:
-        print("❌ Error al enviar mensaje:", response.text)
+    data = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
+    try:
+        r = requests.post(url, data=data)
+        print("✅ Enviado" if r.status_code == 200 else f"❌ {r.text}")
+    except Exception as e:
+        print("❌ Error al enviar:", e)
 
+# Obtener cuotas
+def fetch_odds():
+    url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/odds"
+    params = {
+        "regions": REGION,
+        "markets": ",".join(MARKETS),
+        "oddsFormat": "decimal",
+        "apiKey": API_KEY
+    }
+    r = requests.get(url, params=params)
+    return r.json() if r.ok else []
+
+# Obtener scores (si está en vivo)
+def fetch_scores(event_ids):
+    url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/scores"
+    params = {"apiKey": API_KEY, "eventIds": ",".join(event_ids)}
+    r = requests.get(url, params=params)
+    if r.ok:
+        return {e["id"]: e for e in r.json()}
+    else:
+        return {}
+
+# Lógica principal del bot
+def check():
+    evs = fetch_odds()
+    print(f"🎯 Eventos recibidos: {len(evs)}")
+    tz = pytz.timezone("Europe/Madrid")
+    scores_map = fetch_scores([e["id"] for e in evs])
+
+    for event in evs:
+        match = event["home_team"] + " vs " + event["away_team"]
+        utc = datetime.fromisoformat(event["commence_time"].replace("Z", "+00:00"))
+        start_time = utc.astimezone(tz).strftime("%d/%m %H:%M")
+
+        info = scores_map.get(event["id"])
+        if info and info.get("scores"):
+            scores = {p["name"]: p["score"] for p in info["scores"]}
+            live = f"⏱️ En juego: {scores.get(event['home_team'], 0)}–{scores.get(event['away_team'], 0)}"
+        else:
+            live = f"🕰️ {start_time}"
+
+        preferred = event["bookmakers"][0] if event["bookmakers"] else None
+        if not preferred:
+            continue
+
+        msg_lines = []
+        for m in preferred["markets"]:
+            mkey = m["key"]
+            if mkey not in ("spreads", "totals"):
+                continue
+
+            market_type = "Asian Handicap" if mkey == "spreads" else "Over/Under"
+            for o in m["outcomes"]:
+                label = o["name"]
+                price = o["price"]
+                point = o.get("point")
+                if point is not None:
+                    label = f"{label} {point}"
+
+                key = f"{market_type} | {label}"
+                prev = last.get(match, {}).get(key)
+                icon = "🆕"
+                if prev is not None:
+                    if abs(prev - price) >= 0.10:
+                        icon = "🔼" if price > prev else "🔽"
+                        line = f"{market_type}: {label} @ {price} {icon} desde {prev}"
+                    else:
+                        continue
+                else:
+                    line = f"{market_type}: {label} @ {price} {icon}"
+
+                print(f"🔔 {line}")
+                msg_lines.append(line)
+                last.setdefault(match, {})[key] = price
+
+        if msg_lines:
+            full_msg = f"<b>{match}</b>\n📍 <i>Bookmaker:</i> {preferred['title']}\n{live}\n\n" + "<br>".join(msg_lines)
+            print("📤 ENVIANDO:", full_msg)
+            send_alert(full_msg)
+
+# Ejecución
 if __name__ == "__main__":
+    threading.Thread(target=start_web).start()
     while True:
-        send_alert()
+        check()
         time.sleep(INTERVAL)
