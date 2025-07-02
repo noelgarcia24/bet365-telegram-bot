@@ -18,8 +18,13 @@ def start_web():
     app.run(host="0.0.0.0", port=8080)
 
 # Configuración desde archivo config.json
-with open("config.json") as f:
-    cfg = json.load(f)
+import os
+cfg = {
+    "api_key": os.getenv("api_key"),
+    "token": os.getenv("token"),
+    "chat_id": os.getenv("chat_id"),
+    "interval_seconds": int(os.getenv("interval_seconds", 900))
+}
 
 API_KEY = cfg["api_key"]
 TOKEN = cfg["token"]
