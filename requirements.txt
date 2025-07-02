@@ -1,6 +1,3 @@
 flask
 requests
 pytz
-uptime_flask_ping
-the-odds-api
-gunicorn
