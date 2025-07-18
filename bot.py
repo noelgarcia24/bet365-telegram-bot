@@ -1,9 +1,19 @@
 import time
 import requests
 import json
-from datetime import datetime
 import pytz
+from datetime import datetime
+from flask import Flask
+import threading
 
+# Flask app para mantener vivo el bot
+app = Flask(__name__)
+
+@app.route('/')
+def ping():
+    return "I'm alive!"
+
+# Cargar configuración desde variables de entorno simuladas (Render usaría reales)
 with open("config.json") as f:
     cfg = json.load(f)
 
@@ -11,7 +21,7 @@ API_KEY = cfg["api_key"]
 TOKEN = cfg["token"]
 CHAT_ID = cfg["chat_id"]
 INTERVAL = cfg["interval_seconds"]
-SPORT = "soccer_fifa_club_world_cup"
+SPORT = "soccer_spain_la_liga"
 REGION = "eu"
 MARKETS = ["spreads", "totals"]
 last = {}
@@ -44,7 +54,7 @@ def fetch_scores(event_ids):
 
 def check():
     evs = fetch_odds()
-    print(f"🎯 Eventos recibidos: {len(evs)}")
+    print(f"\n🎯 Eventos recibidos: {len(evs)}")
     tz = pytz.timezone("Europe/Madrid")
     scores_map = fetch_scores([e["id"] for e in evs])
 
@@ -99,7 +109,9 @@ def check():
             print("📤 ENVIANDO:", full_msg)
             send_alert(full_msg)
 
+# Iniciar Flask + chequeo periódico
 if __name__ == "__main__":
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
     while True:
         check()
         time.sleep(INTERVAL)
