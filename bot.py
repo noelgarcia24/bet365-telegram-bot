@@ -45,6 +45,7 @@ def fetch_odds():
     }
     r = requests.get(url, params=params)
     return r.json() if r.ok else []
+    print("🔍 Respuesta de OddsAPI:", response.status_code, response.text)
 
 def fetch_scores(event_ids):
     url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/scores"
