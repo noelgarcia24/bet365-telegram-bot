@@ -1,118 +1,71 @@
+import os
 import time
 import requests
-import json
-import pytz
-from datetime import datetime
 from flask import Flask
-import threading
 
-# Flask app para mantener vivo el bot
+# Configuración
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # tu token del bot de Telegram en Render
+CHAT_ID = os.getenv("CHAT_ID")      # tu chat id en Render
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")  # tu API key de OddsAPI
+INTERVAL = 30  # cada 30 segundos para probar
+
+# Flask (para Render uptime)
 app = Flask(__name__)
 
 @app.route('/')
-def ping():
-    return "I'm alive!"
+def home():
+    return "Bot activo ✅"
 
-# Cargar configuración desde variables de entorno simuladas (Render usaría reales)
-with open("config.json") as f:
-    cfg = json.load(f)
-
-API_KEY = cfg["api_key"]
-TOKEN = cfg["token"]
-CHAT_ID = cfg["chat_id"]
-INTERVAL = cfg["interval_seconds"]
-SPORT = "soccer_spain_la_liga"
-REGION = "eu"
-MARKETS = ["spreads", "totals"]
-last = {}
-
-def send_alert(msg):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message}
     try:
-        r = requests.post(url, data=data)
-        print("✅ Enviado" if r.status_code == 200 else f"❌ {r.text}")
+        r = requests.post(url, json=payload)
+        print("📩 Enviado a Telegram:", r.status_code, r.text)
     except Exception as e:
-        print("❌ Error al enviar:", e)
+        print("⚠️ Error enviando a Telegram:", e)
 
-def fetch_odds():
-    url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/odds"
+def check_matches():
+    url = "https://api.the-odds-api.com/v4/sports/soccer_spain_la_liga/odds/"
     params = {
-        "regions": REGION,
-        "markets": ",".join(MARKETS),
-        "oddsFormat": "decimal",
-        "apiKey": API_KEY
+        "apiKey": ODDS_API_KEY,
+        "regions": "eu",
+        "markets": "h2h",
+        "oddsFormat": "decimal"
     }
-    r = requests.get(url, params=params)
-    return r.json() if r.ok else []
-    print("🔍 Respuesta de OddsAPI:", response.status_code, response.text)
 
-def fetch_scores(event_ids):
-    url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/scores"
-    params = {"apiKey": API_KEY, "eventIds": ",".join(event_ids)}
-    r = requests.get(url, params=params)
-    return {e["id"]: e for e in r.json()} if r.ok else {}
+    try:
+        response = requests.get(url, params=params)
+        print("🔍 Respuesta de OddsAPI:", response.status_code, response.text)  # 👈 DEBUG
 
-def check():
-    evs = fetch_odds()
-    print(f"\n🎯 Eventos recibidos: {len(evs)}")
-    tz = pytz.timezone("Europe/Madrid")
-    scores_map = fetch_scores([e["id"] for e in evs])
+        if response.status_code != 200:
+            send_telegram_message(f"⚠️ Error API Odds: {response.status_code}")
+            return
 
-    for event in evs:
-        match = event["home_team"] + " vs " + event["away_team"]
-        utc = datetime.fromisoformat(event["commence_time"].replace("Z", "+00:00"))
-        start_time = utc.astimezone(tz).strftime("%d/%m %H:%M")
+        data = response.json()
+        if not data:
+            print("❌ No hay partidos en la respuesta.")
+            return
 
-        info = scores_map.get(event["id"])
-        if info and info.get("scores"):
-            scores = {p["name"]: p["score"] for p in info["scores"]}
-            live = f"⏱️ En juego: {scores.get(event['home_team'], 0)}–{scores.get(event['away_team'], 0)}"
-        else:
-            live = f"🕰️ {start_time}"
+        for match in data:
+            home = match["home_team"]
+            away = match["away_team"]
+            commence = match["commence_time"]
 
-        preferred = event["bookmakers"][0] if event["bookmakers"] else None
-        if not preferred:
-            continue
+            msg = f"⚽ Partido encontrado:\n{home} vs {away}\n⏰ {commence}"
+            send_telegram_message(msg)
 
-        msg_lines = []
-        for m in preferred["markets"]:
-            mkey = m["key"]
-            if mkey not in ("spreads", "totals"):
-                continue
+    except Exception as e:
+        print("⚠️ Error en check_matches:", e)
 
-            market_type = "Asian Handicap" if mkey == "spreads" else "Over/Under"
-            for o in m["outcomes"]:
-                label = o["name"]
-                price = o["price"]
-                point = o.get("point")
-                if point is not None:
-                    label = f"{label} {point}"
-
-                key = f"{market_type} | {label}"
-                prev = last.get(match, {}).get(key)
-                icon = "🆕"
-                if prev is not None:
-                    if abs(prev - price) >= 0.10:
-                        icon = "🔼" if price > prev else "🔽"
-                        line = f"{market_type}: {label} @ {price} {icon} desde {prev}"
-                    else:
-                        continue
-                else:
-                    line = f"{market_type}: {label} @ {price} {icon}"
-
-                print(f"🔔 {line}")
-                msg_lines.append(line)
-                last.setdefault(match, {})[key] = price
-
-        if msg_lines:
-            full_msg = f"<b>{match}</b>\n📍 <i>Bookmaker:</i> {preferred['title']}\n{live}\n\n" + "\n".join(msg_lines)
-            print("📤 ENVIANDO:", full_msg)
-            send_alert(full_msg)
-
-# Iniciar Flask + chequeo periódico
-if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
+# Loop infinito (simulación de background worker)
+def run_loop():
     while True:
-        check()
+        check_matches()
         time.sleep(INTERVAL)
+
+if __name__ == "__main__":
+    import threading
+    threading.Thread(target=run_loop).start()
+    app.run(host="0.0.0.0", port=10000)
+
